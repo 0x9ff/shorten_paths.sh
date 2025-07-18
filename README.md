@@ -6,6 +6,9 @@
 
 Generated with Grok 3, tested on 300GB+ of real data.
 
+### Warning: dev branch
+Dev branch includes folder path renaming by looking at the longest name in target-exceeding path. Untested and (probably) not immediately functional.
+
 ### Key Features
 - **Removes Illegal Characters**: Replaces characters like `~`, `#`, `%`, `&`, `*`, `{`, `}`, `:`, `\`, `<`, `>`, `?`, `/`, `+`, `|`, `,`, leading/trailing periods, and leading dashes with underscores (`_`).
 - **Cleans Multiple Spaces**: Reduces multiple consecutive spaces to a single space (e.g., `TEST  123` → `TEST 123`).
@@ -171,7 +174,6 @@ Total processed: 6 items, Total changes: 4
 For further assistance, share the `long_paths_report.txt` output with the script maintainer.
 
 ## Limitations
-- Does not automatically shorten long paths unless the file/folder name itself is too long. Manual intervention may be needed for deeply nested structures.
 - Dry-run mode runs only one pass to avoid redundant simulation, so some parent directory issues may not be fully previewed.
 - Assumes Unix-like environment; not tested on Windows without Bash (e.g., WSL).
 
