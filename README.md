@@ -4,7 +4,7 @@
 
 `shorten_paths.sh` is a Bash script designed to clean up file and folder names in a specified directory to ensure compatibility with platforms like SharePoint. It addresses common issues such as illegal characters, long paths or names, multiple spaces, space-underscore-space sequences, trailing numeric suffixes, and system files. The script processes files and directories recursively, logs all actions, and supports a dry-run mode for testing.
 
-Generated with Grok 3, tested on 300GB+ of real data.
+Generated with Grok 3
 
 ### Warning: dev branch
 Dev branch includes folder path renaming by looking at the longest name in target-exceeding path. Untested and (probably) not immediately functional.
