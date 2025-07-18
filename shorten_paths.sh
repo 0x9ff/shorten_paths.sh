@@ -129,7 +129,8 @@ generate_unique_name() {
         fi
     fi
     
-    local new_name="$final_name$ext"
+    local new_name="$final_name"
+    [[ -n "$ext" && "$ext" != "$original" ]] && new_name="${final_name}${ext}"
     local counter=1
     local unique_name="$new_name"
     
@@ -168,6 +169,9 @@ process_paths() {
     
     echo "Scanning directory: $dir" | tee -a "$log_file"
     echo "Logging paths exceeding $MAX_PATH_LENGTH characters, names exceeding $MAX_NAME_LENGTH characters, containing illegal characters, space-underscore-space, multiple spaces, shadow files (~$), .DS_Store, or Thumbs.db to $log_file" | tee -a "$log_file"
+    
+    # Array to store renamed directories
+    declare -A renamed_dirs
     
     # Main processing loop for deletions and renames
     while true; do
@@ -276,9 +280,11 @@ process_paths() {
                                     echo "Renamed directory '$longest_dir' to '$unique_dir_name'"
                                     ((items_changed++))
                                     ((total_changed++))
-                                    # Update item_path and path_length
+                                    # Update item_path for current item
                                     item_path=$(echo "$item_path" | sed "s|$longest_dir|$unique_dir_name|")
                                     path_length=${#item_path}
+                                    # Store renamed directory for updating other paths
+                                    renamed_dirs["$dir_path"]="$(dirname "$dir_path")/$unique_dir_name"
                                 else
                                     echo "Failed to rename directory '$longest_dir'" >> "$log_file"
                                     echo "Failed to rename directory '$longest_dir'"
@@ -310,11 +316,9 @@ process_paths() {
                     local ext=""
                     local is_dir=0
                     if [[ -f "$item" ]]; then
-                        ext="${item_name##*.}"
-                        if [[ "$ext" == "$item_name" ]]; then
+                        ext=".${item_name##*.}"
+                        if [[ "$ext" == ".$item_name" ]]; then
                             ext=""  # No extension
-                        else
-                            ext=".$ext"
                         fi
                     elif [[ -d "$item" ]]; then
                         is_dir=1
@@ -355,9 +359,13 @@ process_paths() {
                             fi
                             ((items_changed++))
                             ((total_changed++))
+                            # If this is a directory, store it for path updates
+                            if [[ -d "$new_path" ]]; then
+                                renamed_dirs["$item"]="$new_path"
+                            fi
                         else
-                            echo "Failed to rename '$item_name'" >> "$log_file"
-                            echo "Failed to rename '$item_name'"
+                            echo "Failed to rename '$item_name' to '$new_name'" >> "$log_file"
+                            echo "Failed to rename '$item_name' to '$new_name'"
                         fi
                     fi
                 fi
