@@ -5,18 +5,20 @@ MAX_PATH_LENGTH=260  # Maximum path length (adjust if needed)
 MAX_NAME_LENGTH=128  # Maximum file/folder name length
 SOURCE_DIR="$1"      # Directory to scan (passed as argument)
 OUTPUT_LOG="long_paths_report.txt"
-TRUNCATE_TO=50       # Target length for shortened names (excluding extension)
+TRUNCATE_TO=60       # Increased to handle model lists (e.g., SMERIGLIATRICE)
 DRY_RUN=0            # Default: no dry run
+TEMP_DIR_FILE="/tmp/renamed_dirs_$$.txt"  # Temporary file for renamed directories
+TEMP_PROCESSED_FILE="/tmp/processed_paths_$$.txt"  # Temporary file for processed paths
 
 # Illegal characters regex for SharePoint (excluding spaces for separate handling)
 ILLEGAL_CHARS='[~"#%&*{}:\\<>?/+|,]+|\.\.+|^[.]|^[-]'
 
 # Check for dry-run flag
-if [[ "$1" == "--dry-run" ]]; then
+if [ "$1" = "--dry-run" ]; then
     DRY_RUN=1
     SOURCE_DIR="$2"
     echo "Running in DRY-RUN mode. No changes will be made."
-elif [[ "$2" == "--dry-run" ]]; then
+elif [ "$2" = "--dry-run" ]; then
     DRY_RUN=1
     echo "Running in DRY-RUN mode. No changes will be made."
 fi
@@ -24,7 +26,7 @@ fi
 # Function to check if a name contains illegal characters
 has_illegal_chars() {
     local name="$1"
-    if [[ "$name" =~ $ILLEGAL_CHARS || "$name" =~ ^[[:space:]]|[[:space:]]$ ]]; then
+    if echo "$name" | grep -E "$ILLEGAL_CHARS" >/dev/null || echo "$name" | grep -E '^[[:space:]]|[[:space:]]$' >/dev/null; then
         return 0  # Illegal characters or leading/trailing spaces found
     else
         return 1  # No illegal characters
@@ -34,7 +36,7 @@ has_illegal_chars() {
 # Function to check if a name is a shadow file, .DS_Store, or Thumbs.db
 is_special_file() {
     local name="$1"
-    if [[ "$name" =~ ^~\$ || "$name" == ".DS_Store" || "$name" == "Thumbs.db" ]]; then
+    if echo "$name" | grep -E '^~\$' >/dev/null || [ "$name" = ".DS_Store" ] || [ "$name" = "Thumbs.db" ]; then
         return 0  # Shadow file, .DS_Store, or Thumbs.db
     else
         return 1  # Not a special file
@@ -44,11 +46,11 @@ is_special_file() {
 # Function to get special file type
 get_special_file_type() {
     local name="$1"
-    if [[ "$name" =~ ^~\$ ]]; then
+    if echo "$name" | grep -E '^~\$' >/dev/null; then
         echo "Shadow File"
-    elif [[ "$name" == ".DS_Store" ]]; then
+    elif [ "$name" = ".DS_Store" ]; then
         echo ".DS_Store File"
-    elif [[ "$name" == "Thumbs.db" ]]; then
+    elif [ "$name" = "Thumbs.db" ]; then
         echo "Thumbs.db File"
     fi
 }
@@ -61,7 +63,7 @@ clean_name() {
     # Remove leading/trailing spaces, periods, or dashes
     cleaned_name=$(echo "$cleaned_name" | sed -E 's/^[.[:space:]-]+|[.[:space:]-]+$//g')
     # If name is empty after cleaning, provide a default
-    if [[ -z "$cleaned_name" ]]; then
+    if [ -z "$cleaned_name" ]; then
         cleaned_name="renamed_file"
     fi
     echo "$cleaned_name"
@@ -77,7 +79,7 @@ clean_suffixes() {
     # Remove trailing _N or _N_M suffixes (e.g., _1, _1_1)
     cleaned_name=$(echo "$cleaned_name" | sed -E 's/(_[0-9]+)+$//g')
     # If name is empty after cleaning, provide a default
-    if [[ -z "$cleaned_name" ]]; then
+    if [ -z "$cleaned_name" ]; then
         cleaned_name="renamed_file"
     fi
     echo "$cleaned_name"
@@ -90,10 +92,10 @@ find_longest_directory() {
     local max_length=0
     local dir
     # Split path into components, excluding the file name
-    IFS='/' read -ra path_components <<< "$path"
+    IFS='/' read -r -a path_components < <(echo "$path")
     for ((i=1; i<${#path_components[@]}-1; i++)); do
         dir="${path_components[i]}"
-        if [[ ${#dir} -gt $max_length && -n "$dir" ]]; then
+        if [ ${#dir} -gt $max_length ] && [ -n "$dir" ]; then
             max_length=${#dir}
             longest_dir="$dir"
         fi
@@ -118,26 +120,27 @@ generate_unique_name() {
     
     # Truncate if path exceeds MAX_PATH_LENGTH or name exceeds MAX_NAME_LENGTH
     local final_name="$cleaned_name"
-    if [[ -n "$path_length" && ( $path_length -gt $MAX_PATH_LENGTH || ${#base_name} -gt $MAX_NAME_LENGTH ) ]]; then
-        final_name="${cleaned_name:0:$TRUNCATE_TO}"
+    if [ -n "$path_length" ] && [ "$path_length" -gt $MAX_PATH_LENGTH ] || [ ${#base_name} -gt $MAX_NAME_LENGTH ]; then
+        # Preserve key parts (e.g., model codes) by taking first 50 chars and appending a hash
+        final_name=$(echo "$cleaned_name" | cut -c 1-$TRUNCATE_TO)
         # Ensure the name is safe (additional check for alphanumerics)
         final_name=$(echo "$final_name" | tr -dc 'a-zA-Z0-9_-')
-        final_name="${final_name:0:$TRUNCATE_TO}"
+        final_name=$(echo "$final_name" | cut -c 1-$TRUNCATE_TO)
         # If truncated name is empty, use a default
-        if [[ -z "$final_name" ]]; then
+        if [ -z "$final_name" ]; then
             final_name="renamed_${is_dir:+dir_}file"
         fi
     fi
     
     local new_name="$final_name"
-    [[ -n "$ext" && "$ext" != "$original" ]] && new_name="${final_name}${ext}"
+    [ -n "$ext" ] && [ "$ext" != "$original" ] && new_name="${final_name}${ext}"
     local counter=1
     local unique_name="$new_name"
     
     # Check for existing files/directories to avoid overwrites
-    while [[ -e "$dirname/$unique_name" && "$dirname/$unique_name" != "$dirname/$original" ]]; do
+    while [ -e "$dirname/$unique_name" ] && [ "$dirname/$unique_name" != "$dirname/$original" ]; do
         unique_name="${final_name}_${counter}${ext}"
-        ((counter++))
+        counter=$((counter + 1))
     done
     
     echo "$unique_name"
@@ -148,11 +151,44 @@ is_compliant() {
     local name="$1"
     local path_length="$2"
     # Check if name has no illegal characters, no space-underscore-space, no multiple spaces, and is within length limits
-    if [[ ! $(has_illegal_chars "$name"; echo $?) -eq 0 && ! "$name" =~ _[[:space:]]+_ && ! "$name" =~ [[:space:]][[:space:]]+ && ${#name} -le $MAX_NAME_LENGTH && ( -z "$path_length" || $path_length -le $MAX_PATH_LENGTH ) ]]; then
+    if ! has_illegal_chars "$name" && ! echo "$name" | grep -E '_[[:space:]]+_' >/dev/null && ! echo "$name" | grep -E '[[:space:]][[:space:]]+' >/dev/null && [ ${#name} -le $MAX_NAME_LENGTH ] && { [ -z "$path_length" ] || [ "$path_length" -le $MAX_PATH_LENGTH ]; }; then
         return 0  # Compliant
     else
         return 1  # Not compliant
     fi
+}
+
+# Function to update item path based on renamed directories
+update_item_path() {
+    local item_path="$1"
+    local updated_path="$item_path"
+    if [ -f "$TEMP_DIR_FILE" ]; then
+        while IFS='|' read -r old_dir new_dir; do
+            # Escape special characters in old_dir for sed
+            escaped_old_dir=$(printf %q "$old_dir")
+            escaped_new_dir=$(printf %q "$new_dir")
+            if echo "$updated_path" | grep -F "$old_dir" >/dev/null; then
+                updated_path=$(echo "$updated_path" | sed "s|$escaped_old_dir|$escaped_new_dir|")
+            fi
+        done < "$TEMP_DIR_FILE"
+    fi
+    echo "$updated_path"
+}
+
+# Function to check if path was processed
+was_processed() {
+    local item_path="$1"
+    if [ -f "$TEMP_PROCESSED_FILE" ] && grep -Fx "$item_path" "$TEMP_PROCESSED_FILE" >/dev/null; then
+        return 0  # Already processed
+    else
+        return 1  # Not processed
+    fi
+}
+
+# Function to mark path as processed
+mark_processed() {
+    local item_path="$1"
+    echo "$item_path" >> "$TEMP_PROCESSED_FILE"
 }
 
 # Function to process files and folders
@@ -164,35 +200,45 @@ process_paths() {
     local total_changed=0
     local pass=0
     
-    # Clear the log file
-    > "$log_file"
+    # Clear the log file and temporary files
+    : > "$log_file"
+    : > "$TEMP_DIR_FILE"
+    : > "$TEMP_PROCESSED_FILE"
     
     echo "Scanning directory: $dir" | tee -a "$log_file"
     echo "Logging paths exceeding $MAX_PATH_LENGTH characters, names exceeding $MAX_NAME_LENGTH characters, containing illegal characters, space-underscore-space, multiple spaces, shadow files (~$), .DS_Store, or Thumbs.db to $log_file" | tee -a "$log_file"
     
-    # Array to store renamed directories
-    declare -A renamed_dirs
-    
     # Main processing loop for deletions and renames
     while true; do
-        ((pass++))
+        pass=$((pass + 1))
         local items_processed=0
         local items_changed=0
         echo "Starting pass $pass" | tee -a "$log_file"
         
         # Use find to locate all files and directories, sort in reverse to process deepest paths first
         while IFS= read -r -d '' item; do
-            # Get the absolute path
+            # Update item path based on renamed directories
             item_path=$(realpath "$item" 2>/dev/null)
-            if [[ $? -ne 0 ]]; then
-                echo "Skipping '$item' (path no longer exists)" >> "$log_file"
-                echo "Skipping '$item' (path no longer exists)"
+            if [ $? -ne 0 ]; then
+                # Try updating path based on renamed directories
+                item_path=$(update_item_path "$item")
+                if [ ! -e "$item_path" ]; then
+                    echo "Skipping '$item' (path no longer exists)" >> "$log_file"
+                    echo "Skipping '$item' (path no longer exists)"
+                    echo "------------------------" >> "$log_file"
+                    continue
+                fi
+            fi
+            # Check if already processed
+            if was_processed "$item_path"; then
+                echo "Skipping '$item_path' (already processed in this pass)" >> "$log_file"
+                echo "Skipping '$item_path' (already processed in this pass)"
                 echo "------------------------" >> "$log_file"
                 continue
             fi
             path_length=${#item_path}
             # Validate path_length is a number
-            if [[ ! $path_length =~ ^[0-9]+$ ]]; then
+            if ! echo "$path_length" | grep -E '^[0-9]+$' >/dev/null; then
                 echo "Skipping '$item' (invalid path length)" >> "$log_file"
                 echo "Skipping '$item' (invalid path length)"
                 echo "------------------------" >> "$log_file"
@@ -206,8 +252,9 @@ process_paths() {
                 echo "Skipping '$item_path' (already compliant)" >> "$log_file"
                 echo "Skipping '$item_path' (already compliant)"
                 echo "------------------------" >> "$log_file"
-                ((items_processed++))
-                ((total_processed++))
+                items_processed=$((items_processed + 1))
+                total_processed=$((total_processed + 1))
+                mark_processed "$item_path"
                 continue
             fi
             
@@ -215,29 +262,30 @@ process_paths() {
             if is_special_file "$item_name"; then
                 echo "Item: $item_path" >> "$log_file"
                 echo "Reason: $(get_special_file_type "$item_name")" >> "$log_file"
-                if [[ $DRY_RUN -eq 1 ]]; then
+                if [ $DRY_RUN -eq 1 ]; then
                     echo "[DRY-RUN] Would delete $(get_special_file_type "$item_name") '$item_name'" >> "$log_file"
                     echo "[DRY-RUN] Would delete $(get_special_file_type "$item_name") '$item_name'"
                 else
-                    rm -f "$item"
-                    if [[ $? -eq 0 ]]; then
+                    rm -f "$item_path"
+                    if [ $? -eq 0 ]; then
                         echo "Deleted $(get_special_file_type "$item_name") '$item_name'" >> "$log_file"
                         echo "Deleted $(get_special_file_type "$item_name") '$item_name'"
-                        ((items_changed++))
-                        ((total_changed++))
+                        items_changed=$((items_changed + 1))
+                        total_changed=$((total_changed + 1))
                     else
                         echo "Failed to delete $(get_special_file_type "$item_name") '$item_name'" >> "$log_file"
                         echo "Failed to delete $(get_special_file_type "$item_name") '$item_name'"
                     fi
                 fi
                 echo "------------------------" >> "$log_file"
-                ((items_processed++))
-                ((total_processed++))
+                items_processed=$((items_processed + 1))
+                total_processed=$((total_processed + 1))
+                mark_processed "$item_path"
                 continue
             fi
             
             # Check for long paths, long names, illegal characters, space-underscore-space, or multiple spaces
-            if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH || $(has_illegal_chars "$item_name"; echo $?) -eq 0 || "$item_name" =~ _[[:space:]]+_ || "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
+            if [ $path_length -gt $MAX_PATH_LENGTH ] || [ $name_length -gt $MAX_NAME_LENGTH ] || has_illegal_chars "$item_name" || echo "$item_name" | grep -E '_[[:space:]]+_' >/dev/null || echo "$item_name" | grep -E '[[:space:]][[:space:]]+' >/dev/null; then
                 echo "Item: $item_path" >> "$log_file"
                 
                 # Initialize variables
@@ -248,43 +296,45 @@ process_paths() {
                 local rename_reason=""
                 
                 # Handle long paths by truncating the longest directory first
-                if [[ $path_length -gt $MAX_PATH_LENGTH ]]; then
+                if [ $path_length -gt $MAX_PATH_LENGTH ]; then
                     echo "Path Length: $path_length" >> "$log_file"
                     echo "Name Length: $name_length" >> "$log_file"
                     local longest_dir=$(find_longest_directory "$item_path")
-                    if [[ -n "$longest_dir" ]]; then
+                    if [ -n "$longest_dir" ]; then
                         local dir_path=$(dirname "$item_path" | sed "s|/$longest_dir/.*$||")/$longest_dir
                         local cleaned_dir_name=$(clean_name "$longest_dir")
                         cleaned_dir_name=$(clean_suffixes "$cleaned_dir_name")
-                        local truncated_dir_name="${cleaned_dir_name:0:$TRUNCATE_TO}"
+                        local truncated_dir_name=$(echo "$cleaned_dir_name" | cut -c 1-$TRUNCATE_TO)
                         truncated_dir_name=$(echo "$truncated_dir_name" | tr -dc 'a-zA-Z0-9_-')
-                        truncated_dir_name="${truncated_dir_name:0:$TRUNCATE_TO}"
-                        if [[ -z "$truncated_dir_name" ]]; then
+                        truncated_dir_name=$(echo "$truncated_dir_name" | cut -c 1-$TRUNCATE_TO)
+                        if [ -z "$truncated_dir_name" ]; then
                             truncated_dir_name="renamed_dir"
                         fi
                         local counter=1
                         local unique_dir_name="$truncated_dir_name"
-                        while [[ -e "$(dirname "$dir_path")/$unique_dir_name" && "$(dirname "$dir_path")/$unique_dir_name" != "$dir_path" ]]; do
+                        while [ -e "$(dirname "$dir_path")/$unique_dir_name" ] && [ "$(dirname "$dir_path")/$unique_dir_name" != "$dir_path" ]; do
                             unique_dir_name="${truncated_dir_name}_${counter}"
-                            ((counter++))
+                            counter=$((counter + 1))
                         done
-                        if [[ "$longest_dir" != "$unique_dir_name" ]]; then
+                        if [ "$longest_dir" != "$unique_dir_name" ]; then
                             rename_reason="Long Path (Truncated Directory)"
-                            if [[ $DRY_RUN -eq 1 ]]; then
+                            if [ $DRY_RUN -eq 1 ]; then
                                 echo "[DRY-RUN] Would rename directory '$longest_dir' to '$unique_dir_name'" >> "$log_file"
                                 echo "[DRY-RUN] Would rename directory '$longest_dir' to '$unique_dir_name'"
                             else
+                                escaped_dir_path=$(printf %q "$dir_path")
+                                escaped_new_dir=$(printf %q "$(dirname "$dir_path")/$unique_dir_name")
                                 mv -n "$dir_path" "$(dirname "$dir_path")/$unique_dir_name"
-                                if [[ $? -eq 0 ]]; then
+                                if [ $? -eq 0 ]; then
                                     echo "Renamed directory '$longest_dir' to '$unique_dir_name'" >> "$log_file"
                                     echo "Renamed directory '$longest_dir' to '$unique_dir_name'"
-                                    ((items_changed++))
-                                    ((total_changed++))
+                                    items_changed=$((items_changed + 1))
+                                    total_changed=$((total_changed + 1))
                                     # Update item_path for current item
-                                    item_path=$(echo "$item_path" | sed "s|$longest_dir|$unique_dir_name|")
+                                    item_path=$(echo "$item_path" | sed "s|$escaped_dir_path|$escaped_new_dir|")
                                     path_length=${#item_path}
-                                    # Store renamed directory for updating other paths
-                                    renamed_dirs["$dir_path"]="$(dirname "$dir_path")/$unique_dir_name"
+                                    # Store renamed directory in temporary file
+                                    echo "$dir_path|$(dirname "$dir_path")/$unique_dir_name" >> "$TEMP_DIR_FILE"
                                 else
                                     echo "Failed to rename directory '$longest_dir'" >> "$log_file"
                                     echo "Failed to rename directory '$longest_dir'"
@@ -295,52 +345,53 @@ process_paths() {
                 fi
                 
                 # Handle other issues (long names, illegal chars, spaces, etc.)
-                if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH || $(has_illegal_chars "$item_name"; echo $?) -eq 0 || "$item_name" =~ _[[:space:]]+_ || "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
-                    if [[ $path_length -gt $MAX_PATH_LENGTH && -z "$rename_reason" ]]; then
+                if [ $path_length -gt $MAX_PATH_LENGTH ] || [ $name_length -gt $MAX_NAME_LENGTH ] || has_illegal_chars "$item_name" || echo "$item_name" | grep -E '_[[:space:]]+_' >/dev/null || echo "$item_name" | grep -E '[[:space:]][[:space:]]+' >/dev/null; then
+                    if [ $path_length -gt $MAX_PATH_LENGTH ] && [ -z "$rename_reason" ]; then
                         echo "Path Length: $path_length" >> "$log_file"
                         echo "Name Length: $name_length" >> "$log_file"
                         rename_reason="Long Path (Truncated File Name)"
-                    elif [[ $name_length -gt $MAX_NAME_LENGTH ]]; then
+                    elif [ $name_length -gt $MAX_NAME_LENGTH ]; then
                         echo "Path Length: $path_length" >> "$log_file"
                         echo "Name Length: $name_length" >> "$log_file"
                         rename_reason="Long Name"
-                    elif [[ $(has_illegal_chars "$item_name"; echo $?) -eq 0 ]]; then
+                    elif has_illegal_chars "$item_name"; then
                         rename_reason="Illegal Characters"
-                    elif [[ "$item_name" =~ _[[:space:]]+_ ]]; then
+                    elif echo "$item_name" | grep -E '_[[:space:]]+_' >/dev/null; then
                         rename_reason="Space-Underscore-Space"
-                    elif [[ "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
+                    elif echo "$item_name" | grep -E '[[:space:]][[:space:]]+' >/dev/null; then
                         rename_reason="Multiple Spaces"
                     fi
                     
                     # Generate new name for the file or folder
                     local ext=""
                     local is_dir=0
-                    if [[ -f "$item" ]]; then
+                    if [ -f "$item_path" ]; then
                         ext=".${item_name##*.}"
-                        if [[ "$ext" == ".$item_name" ]]; then
+                        if [ "$ext" = ".$item_name" ]; then
                             ext=""  # No extension
                         fi
-                    elif [[ -d "$item" ]]; then
+                    elif [ -d "$item_path" ]; then
                         is_dir=1
                     fi
                     
-                    new_name=$(generate_unique_name "$item_name" "$(dirname "$item")" "$ext" "$path_length" "$is_dir")
-                    new_path="$(dirname "$item")/$new_name"
+                    new_name=$(generate_unique_name "$item_name" "$(dirname "$item_path")" "$ext" "$path_length" "$is_dir")
+                    new_path="$(dirname "$item_path")/$new_name"
                     new_path_length=${#new_path}
                     new_name_length=${#new_name}
                     
                     # Skip if no rename is needed (same name)
-                    if [[ "$new_name" == "$item_name" ]]; then
+                    if [ "$new_name" = "$item_name" ]; then
                         echo "No rename needed for '$item_name' (name already valid)" >> "$log_file"
                         echo "No rename needed for '$item_name' (name already valid)"
                         echo "------------------------" >> "$log_file"
-                        ((items_processed++))
-                        ((total_processed++))
+                        items_processed=$((items_processed + 1))
+                        total_processed=$((total_processed + 1))
+                        mark_processed "$item_path"
                         continue
                     fi
                     
-                    if [[ $DRY_RUN -eq 1 ]]; then
-                        if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
+                    if [ $DRY_RUN -eq 1 ]; then
+                        if [ $path_length -gt $MAX_PATH_LENGTH ] || [ $name_length -gt $MAX_NAME_LENGTH ]; then
                             echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)" >> "$log_file"
                             echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)"
                         else
@@ -348,20 +399,22 @@ process_paths() {
                             echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: $rename_reason)"
                         fi
                     else
-                        mv -n "$item" "$new_path"
-                        if [[ $? -eq 0 ]]; then
-                            if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
+                        escaped_item_path=$(printf %q "$item_path")
+                        escaped_new_path=$(printf %q "$new_path")
+                        mv -n "$item_path" "$new_path"
+                        if [ $? -eq 0 ]; then
+                            if [ $path_length -gt $MAX_PATH_LENGTH ] || [ $name_length -gt $MAX_NAME_LENGTH ]; then
                                 echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)" >> "$log_file"
                                 echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)"
                             else
                                 echo "Renamed '$item_name' to '$new_name' (Reason: $rename_reason)" >> "$log_file"
                                 echo "Renamed '$item_name' to '$new_name' (Reason: $rename_reason)"
                             fi
-                            ((items_changed++))
-                            ((total_changed++))
+                            items_changed=$((items_changed + 1))
+                            total_changed=$((total_changed + 1))
                             # If this is a directory, store it for path updates
-                            if [[ -d "$new_path" ]]; then
-                                renamed_dirs["$item"]="$new_path"
+                            if [ -d "$new_path" ]; then
+                                echo "$item_path|$new_path" >> "$TEMP_DIR_FILE"
                             fi
                         else
                             echo "Failed to rename '$item_name' to '$new_name'" >> "$log_file"
@@ -370,13 +423,14 @@ process_paths() {
                     fi
                 fi
                 echo "------------------------" >> "$log_file"
-                ((items_processed++))
-                ((total_processed++))
+                items_processed=$((items_processed + 1))
+                total_processed=$((total_processed + 1))
+                mark_processed "$item_path"
             fi
         done < <(find "$dir" -print0 | sort -r)
         
         # In dry-run mode, exit after one pass
-        if [[ $DRY_RUN -eq 1 ]]; then
+        if [ $DRY_RUN -eq 1 ]; then
             echo "Dry-run complete. Processed $items_processed items in pass $pass" | tee -a "$log_file"
             break
         fi
@@ -384,16 +438,19 @@ process_paths() {
         echo "Pass $pass complete. Processed $items_processed items, made $items_changed changes" | tee -a "$log_file"
         
         # Exit if no changes were made
-        if [[ $items_changed -eq 0 ]]; then
+        if [ $items_changed -eq 0 ]; then
             break
         fi
     done
+    
+    # Clean up temporary files
+    rm -f "$TEMP_DIR_FILE" "$TEMP_PROCESSED_FILE"
     
     echo "Total processed: $total_processed items, Total changes: $total_changed" | tee -a "$log_file"
 }
 
 # Check if source directory is provided
-if [[ -z "$SOURCE_DIR" || ! -d "$SOURCE_DIR" ]]; then
+if [ -z "$SOURCE_DIR" ] || [ ! -d "$SOURCE_DIR" ]; then
     echo "Usage: $0 [--dry-run] <source_directory>"
     echo "Please provide a valid directory to scan."
     exit 1
