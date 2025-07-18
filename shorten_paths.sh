@@ -83,12 +83,31 @@ clean_suffixes() {
     echo "$cleaned_name"
 }
 
-# Function to generate a unique name
+# Function to find the longest directory in a path
+find_longest_directory() {
+    local path="$1"
+    local longest_dir=""
+    local max_length=0
+    local dir
+    # Split path into components, excluding the file name
+    IFS='/' read -ra path_components <<< "$path"
+    for ((i=1; i<${#path_components[@]}-1; i++)); do
+        dir="${path_components[i]}"
+        if [[ ${#dir} -gt $max_length && -n "$dir" ]]; then
+            max_length=${#dir}
+            longest_dir="$dir"
+        fi
+    done
+    echo "$longest_dir"
+}
+
+# Function to generate a unique name for a directory or file
 generate_unique_name() {
     local original="$1"
     local dirname="$2"
     local ext="$3"
-    local path_length="$4"  # Pass path length to check if truncation is needed
+    local path_length="$4"
+    local is_dir="$5"  # Flag to indicate if item is a directory (0=file, 1=dir)
     
     # Clean illegal characters
     local base_name=$(basename -- "$original" "$ext")
@@ -97,13 +116,7 @@ generate_unique_name() {
     # Remove multiple spaces, space-underscore-space, and trailing numeric suffixes
     cleaned_name=$(clean_suffixes "$cleaned_name")
     
-    # Check if cleaned name is the same as original (no changes needed)
-    if [[ "$cleaned_name" == "$base_name" && -n "$path_length" && $path_length -gt $MAX_PATH_LENGTH && ${#base_name} -le $MAX_NAME_LENGTH ]]; then
-        echo "$original"  # Return original name if no changes needed
-        return
-    fi
-    
-    # Truncate only if name or path exceeds limits
+    # Truncate if path exceeds MAX_PATH_LENGTH or name exceeds MAX_NAME_LENGTH
     local final_name="$cleaned_name"
     if [[ -n "$path_length" && ( $path_length -gt $MAX_PATH_LENGTH || ${#base_name} -gt $MAX_NAME_LENGTH ) ]]; then
         final_name="${cleaned_name:0:$TRUNCATE_TO}"
@@ -112,7 +125,7 @@ generate_unique_name() {
         final_name="${final_name:0:$TRUNCATE_TO}"
         # If truncated name is empty, use a default
         if [[ -z "$final_name" ]]; then
-            final_name="renamed_file"
+            final_name="renamed_${is_dir:+dir_}file"
         fi
     fi
     
@@ -120,7 +133,7 @@ generate_unique_name() {
     local counter=1
     local unique_name="$new_name"
     
-    # Check for existing files to avoid overwrites
+    # Check for existing files/directories to avoid overwrites
     while [[ -e "$dirname/$unique_name" && "$dirname/$unique_name" != "$dirname/$original" ]]; do
         unique_name="${final_name}_${counter}${ext}"
         ((counter++))
@@ -222,80 +235,130 @@ process_paths() {
             # Check for long paths, long names, illegal characters, space-underscore-space, or multiple spaces
             if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH || $(has_illegal_chars "$item_name"; echo $?) -eq 0 || "$item_name" =~ _[[:space:]]+_ || "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
                 echo "Item: $item_path" >> "$log_file"
-                if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
+                
+                # Initialize variables
+                local new_name="$item_name"
+                local new_path="$item_path"
+                local new_path_length="$path_length"
+                local new_name_length="$name_length"
+                local rename_reason=""
+                
+                # Handle long paths by truncating the longest directory first
+                if [[ $path_length -gt $MAX_PATH_LENGTH ]]; then
                     echo "Path Length: $path_length" >> "$log_file"
                     echo "Name Length: $name_length" >> "$log_file"
-                    echo "Reason: Long Path or Name" >> "$log_file"
-                elif [[ $(has_illegal_chars "$item_name"; echo $?) -eq 0 ]]; then
-                    echo "Reason: Illegal Characters" >> "$log_file"
-                elif [[ "$item_name" =~ _[[:space:]]+_ ]]; then
-                    echo "Reason: Space-Underscore-Space" >> "$log_file"
-                elif [[ "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
-                    echo "Reason: Multiple Spaces" >> "$log_file"
-                fi
-                
-                # Generate new name
-                local ext=""
-                if [[ -f "$item" ]]; then
-                    ext="${item_name##*.}"
-                    if [[ "$ext" == "$item_name" ]]; then
-                        ext=""  # No extension
-                    else
-                        ext=".$ext"
-                    fi
-                fi
-                
-                new_name=$(generate_unique_name "$item_name" "$(dirname "$item")" "$ext" "$path_length")
-                new_path="$(dirname "$item")/$new_name"
-                new_path_length=${#new_path}
-                new_name_length=${#new_name}
-                
-                # Skip if no rename is needed (same name)
-                if [[ "$new_name" == "$item_name" ]]; then
-                    echo "No rename needed for '$item_name' (name already valid)" >> "$log_file"
-                    echo "No rename needed for '$item_name' (name already valid)"
-                    echo "------------------------" >> "$log_file"
-                    ((items_processed++))
-                    ((total_processed++))
-                    continue
-                fi
-                
-                if [[ $DRY_RUN -eq 1 ]]; then
-                    if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length)" >> "$log_file"
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length)"
-                    elif [[ $(has_illegal_chars "$item_name"; echo $?) -eq 0 ]]; then
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Illegal Characters)" >> "$log_file"
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Illegal Characters)"
-                    elif [[ "$item_name" =~ _[[:space:]]+_ ]]; then
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Space-Underscore-Space)" >> "$log_file"
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Space-Underscore-Space)"
-                    elif [[ "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Multiple Spaces)" >> "$log_file"
-                        echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: Multiple Spaces)"
-                    fi
-                else
-                    # Perform the rename
-                    mv -n "$item" "$new_path"
-                    if [[ $? -eq 0 ]]; then
-                        if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
-                            echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length)" >> "$log_file"
-                            echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length)"
-                        elif [[ $(has_illegal_chars "$item_name"; echo $?) -eq 0 ]]; then
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Illegal Characters)" >> "$log_file"
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Illegal Characters)"
-                        elif [[ "$item_name" =~ _[[:space:]]+_ ]]; then
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Space-Underscore-Space)" >> "$log_file"
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Space-Underscore-Space)"
-                        elif [[ "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Multiple Spaces)" >> "$log_file"
-                            echo "Renamed '$item_name' to '$new_name' (Reason: Multiple Spaces)"
+                    local longest_dir=$(find_longest_directory "$item_path")
+                    if [[ -n "$longest_dir" ]]; then
+                        local dir_path=$(dirname "$item_path" | sed "s|/$longest_dir/.*$||")/$longest_dir
+                        local cleaned_dir_name=$(clean_name "$longest_dir")
+                        cleaned_dir_name=$(clean_suffixes "$cleaned_dir_name")
+                        local truncated_dir_name="${cleaned_dir_name:0:$TRUNCATE_TO}"
+                        truncated_dir_name=$(echo "$truncated_dir_name" | tr -dc 'a-zA-Z0-9_-')
+                        truncated_dir_name="${truncated_dir_name:0:$TRUNCATE_TO}"
+                        if [[ -z "$truncated_dir_name" ]]; then
+                            truncated_dir_name="renamed_dir"
                         fi
-                        ((items_changed++))
-                        ((total_changed++))
+                        local counter=1
+                        local unique_dir_name="$truncated_dir_name"
+                        while [[ -e "$(dirname "$dir_path")/$unique_dir_name" && "$(dirname "$dir_path")/$unique_dir_name" != "$dir_path" ]]; do
+                            unique_dir_name="${truncated_dir_name}_${counter}"
+                            ((counter++))
+                        done
+                        if [[ "$longest_dir" != "$unique_dir_name" ]]; then
+                            rename_reason="Long Path (Truncated Directory)"
+                            if [[ $DRY_RUN -eq 1 ]]; then
+                                echo "[DRY-RUN] Would rename directory '$longest_dir' to '$unique_dir_name'" >> "$log_file"
+                                echo "[DRY-RUN] Would rename directory '$longest_dir' to '$unique_dir_name'"
+                            else
+                                mv -n "$dir_path" "$(dirname "$dir_path")/$unique_dir_name"
+                                if [[ $? -eq 0 ]]; then
+                                    echo "Renamed directory '$longest_dir' to '$unique_dir_name'" >> "$log_file"
+                                    echo "Renamed directory '$longest_dir' to '$unique_dir_name'"
+                                    ((items_changed++))
+                                    ((total_changed++))
+                                    # Update item_path and path_length
+                                    item_path=$(echo "$item_path" | sed "s|$longest_dir|$unique_dir_name|")
+                                    path_length=${#item_path}
+                                else
+                                    echo "Failed to rename directory '$longest_dir'" >> "$log_file"
+                                    echo "Failed to rename directory '$longest_dir'"
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+                
+                # Handle other issues (long names, illegal chars, spaces, etc.)
+                if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH || $(has_illegal_chars "$item_name"; echo $?) -eq 0 || "$item_name" =~ _[[:space:]]+_ || "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
+                    if [[ $path_length -gt $MAX_PATH_LENGTH && -z "$rename_reason" ]]; then
+                        echo "Path Length: $path_length" >> "$log_file"
+                        echo "Name Length: $name_length" >> "$log_file"
+                        rename_reason="Long Path (Truncated File Name)"
+                    elif [[ $name_length -gt $MAX_NAME_LENGTH ]]; then
+                        echo "Path Length: $path_length" >> "$log_file"
+                        echo "Name Length: $name_length" >> "$log_file"
+                        rename_reason="Long Name"
+                    elif [[ $(has_illegal_chars "$item_name"; echo $?) -eq 0 ]]; then
+                        rename_reason="Illegal Characters"
+                    elif [[ "$item_name" =~ _[[:space:]]+_ ]]; then
+                        rename_reason="Space-Underscore-Space"
+                    elif [[ "$item_name" =~ [[:space:]][[:space:]]+ ]]; then
+                        rename_reason="Multiple Spaces"
+                    fi
+                    
+                    # Generate new name for the file or folder
+                    local ext=""
+                    local is_dir=0
+                    if [[ -f "$item" ]]; then
+                        ext="${item_name##*.}"
+                        if [[ "$ext" == "$item_name" ]]; then
+                            ext=""  # No extension
+                        else
+                            ext=".$ext"
+                        fi
+                    elif [[ -d "$item" ]]; then
+                        is_dir=1
+                    fi
+                    
+                    new_name=$(generate_unique_name "$item_name" "$(dirname "$item")" "$ext" "$path_length" "$is_dir")
+                    new_path="$(dirname "$item")/$new_name"
+                    new_path_length=${#new_path}
+                    new_name_length=${#new_name}
+                    
+                    # Skip if no rename is needed (same name)
+                    if [[ "$new_name" == "$item_name" ]]; then
+                        echo "No rename needed for '$item_name' (name already valid)" >> "$log_file"
+                        echo "No rename needed for '$item_name' (name already valid)"
+                        echo "------------------------" >> "$log_file"
+                        ((items_processed++))
+                        ((total_processed++))
+                        continue
+                    fi
+                    
+                    if [[ $DRY_RUN -eq 1 ]]; then
+                        if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
+                            echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)" >> "$log_file"
+                            echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)"
+                        else
+                            echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: $rename_reason)" >> "$log_file"
+                            echo "[DRY-RUN] Would rename '$item_name' to '$new_name' (Reason: $rename_reason)"
+                        fi
                     else
-                        echo "Failed to rename '$item_name'" >> "$log_file"
-                        echo "Failed to rename '$item_name'"
+                        mv -n "$item" "$new_path"
+                        if [[ $? -eq 0 ]]; then
+                            if [[ $path_length -gt $MAX_PATH_LENGTH || $name_length -gt $MAX_NAME_LENGTH ]]; then
+                                echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)" >> "$log_file"
+                                echo "Renamed '$item_name' to '$new_name' (Old Path Length: $path_length, Old Name Length: $name_length, New Path Length: $new_path_length, New Name Length: $new_name_length) (Reason: $rename_reason)"
+                            else
+                                echo "Renamed '$item_name' to '$new_name' (Reason: $rename_reason)" >> "$log_file"
+                                echo "Renamed '$item_name' to '$new_name' (Reason: $rename_reason)"
+                            fi
+                            ((items_changed++))
+                            ((total_changed++))
+                        else
+                            echo "Failed to rename '$item_name'" >> "$log_file"
+                            echo "Failed to rename '$item_name'"
+                        fi
                     fi
                 fi
                 echo "------------------------" >> "$log_file"
